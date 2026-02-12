@@ -1,0 +1,102 @@
+# LLMSP Docker Compose — Full Swarm Deployment
+#
+# Spins up the entire LLMSP stack in a single command:
+#
+#   docker compose up
+#
+# Services:
+#   llmsp-init     — one-shot: initializes the SQLite ledger + registry
+#   llmsp-auditor  — continuous: security auditor scanning the event log
+#   llmsp-council  — on-demand: run council deliberations
+#
+# Volumes:
+#   llmsp-data     — persistent SQLite storage (events.db, principals.db)
+#
+# Usage:
+#   # Start the swarm (init + auditor)
+#   docker compose up -d
+#
+#   # Run a council deliberation
+#   docker compose run --rm llmsp-council \
+#     council "Should we use Ed25519 or RSA for signing?" \
+#     --backends claude,gemini
+#
+#   # View event log
+#   docker compose run --rm llmsp-council log council_1738000000
+#
+#   # Semantic search
+#   docker compose run --rm llmsp-council search "cryptography"
+#
+#   # Check swarm health
+#   docker compose run --rm llmsp-council stats
+
+services:
+  # -------------------------------------------------------------------
+  # One-shot init: creates the database schema and registers default agents
+  # -------------------------------------------------------------------
+  llmsp-init:
+    build: .
+    volumes:
+      - llmsp-data:/data
+    environment:
+      - LLMSP_DB_DIR=/data
+    command: ["--db-dir", "/data", "init"]
+    restart: "no"
+
+  # -------------------------------------------------------------------
+  # Security Auditor: continuously monitors the event log for threats
+  # -------------------------------------------------------------------
+  llmsp-auditor:
+    build: .
+    volumes:
+      - llmsp-data:/data
+    environment:
+      - LLMSP_DB_DIR=/data
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+    entrypoint: ["python", "-m", "llmsp.security_auditor"]
+    command: ["--db-dir", "/data", "--interval", "30"]
+    depends_on:
+      llmsp-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------
+  # Council runner: on-demand deliberations
+  # -------------------------------------------------------------------
+  llmsp-council:
+    build: .
+    volumes:
+      - llmsp-data:/data
+    environment:
+      - LLMSP_DB_DIR=/data
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+    command: ["--db-dir", "/data", "--help"]
+    depends_on:
+      llmsp-init:
+        condition: service_completed_successfully
+    profiles:
+      - council
+
+  # -------------------------------------------------------------------
+  # RAG search: query the semantic index
+  # -------------------------------------------------------------------
+  llmsp-search:
+    build: .
+    volumes:
+      - llmsp-data:/data
+    environment:
+      - LLMSP_DB_DIR=/data
+    command: ["--db-dir", "/data", "stats"]
+    depends_on:
+      llmsp-init:
+        condition: service_completed_successfully
+    profiles:
+      - tools
+
+volumes:
+  llmsp-data:
+    driver: local
