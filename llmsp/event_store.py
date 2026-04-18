@@ -164,6 +164,36 @@ class EventStore:
             return None
         return SignedEvent.model_validate_json(row[0])
 
+    def list_channels(self, limit: int = 50) -> list[dict]:
+        """Summarize channels in the ledger, ordered by most-recent activity.
+
+        Each row is ``{channel_id, event_count, first_ts, last_ts, agents}``
+        where ``agents`` is the distinct authors that ever posted to the
+        channel. Used by the dashboard to render a recent-councils list.
+        """
+        rows = self._conn.execute(
+            """SELECT channel_id,
+                      COUNT(*)          AS event_count,
+                      MIN(timestamp)    AS first_ts,
+                      MAX(timestamp)    AS last_ts,
+                      GROUP_CONCAT(DISTINCT author_id) AS authors
+               FROM events
+               GROUP BY channel_id
+               ORDER BY last_ts DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "channel_id": ch,
+                "event_count": n,
+                "first_ts": first,
+                "last_ts": last,
+                "authors": (authors or "").split(","),
+            }
+            for ch, n, first, last, authors in rows
+        ]
+
     # ------------------------------------------------------------------
     # Integrity
     # ------------------------------------------------------------------

@@ -293,3 +293,62 @@ class RAGEngine:
     @property
     def index_size(self) -> int:
         return len(self._index)
+
+    def self_check(self, sample_size: int = 30, top_k: int = 10) -> dict:
+        """Compute retrieval quality metrics against an identity-query set.
+
+        For each indexed event we derive a short query from its own text
+        (the first few content tokens) and score whether the originating
+        event appears in the top-k results. This is a self-consistency
+        check — it confirms the index can recover each document from a
+        fragment of its own content. It is NOT a proxy for semantic
+        recall against unseen queries.
+
+        Returns a dict with MRR, NDCG@10, P@3, R@10, and the sample size.
+        Empty indices return zero metrics so callers can render "no data".
+        """
+        docs = [(e.event_id, e.text) for e in self._index._entries if e.text]
+        if not docs:
+            return {"mrr": 0.0, "ndcg10": 0.0, "p3": 0.0, "r10": 0.0, "queries": 0}
+
+        import random
+        rng = random.Random(0)
+        sample = rng.sample(docs, min(sample_size, len(docs)))
+
+        mrr_sum = 0.0
+        ndcg_sum = 0.0
+        p3_hits = 0
+        r10_hits = 0
+        queries = 0
+        for eid, text in sample:
+            # Use the first 8 non-trivial tokens as the query; skip events
+            # whose text is too thin to produce a meaningful fragment.
+            tokens = [t for t in text.split() if len(t) > 2][:8]
+            if len(tokens) < 3:
+                continue
+            query = " ".join(tokens)
+            try:
+                results = self.search(query, top_k=top_k, resolve_events=False)
+            except Exception:
+                continue
+            queries += 1
+
+            rank = next((i + 1 for i, r in enumerate(results) if r.event_id == eid), None)
+            if rank is not None:
+                mrr_sum += 1.0 / rank
+                # Binary relevance: DCG = 1/log2(rank+1); ideal DCG = 1
+                import math
+                ndcg_sum += 1.0 / math.log2(rank + 1)
+                if rank <= 3: p3_hits += 1
+                if rank <= 10: r10_hits += 1
+
+        if queries == 0:
+            return {"mrr": 0.0, "ndcg10": 0.0, "p3": 0.0, "r10": 0.0, "queries": 0}
+
+        return {
+            "mrr":     round(mrr_sum / queries, 3),
+            "ndcg10":  round(ndcg_sum / queries, 3),
+            "p3":      round(p3_hits / queries, 3) if queries else 0.0,
+            "r10":     round(r10_hits / queries, 3) if queries else 0.0,
+            "queries": queries,
+        }
