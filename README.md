@@ -591,6 +591,9 @@ Markdown with one click.
 | `GET` | `/api/search?q=...&top_k=5` | RAG semantic search |
 | `GET` | `/api/stats` | Swarm statistics |
 | `POST` | `/api/audit` | Run security audit |
+| `GET` | `/api/finops` | Cost + token breakdown by model (and agent) |
+| `GET` | `/api/rag/stats` | RAG index health snapshot |
+| `GET` | `/api/councils` | Recent channels / councils on the ledger |
 
 ### WebSocket
 

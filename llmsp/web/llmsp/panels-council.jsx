@@ -1,9 +1,27 @@
 // Council panels — live deliberation (featured) + council list
 
-function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset, onExpandSynth, onAgentClick, onPickCouncil, activeCouncilId }) {
+function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset, onExpandSynth, onAgentClick, onPickCouncil, activeCouncilId, liveCouncils }) {
   const { LIVE_COUNCIL, COUNCILS } = window.LLMSP_DATA;
-  const active = COUNCILS.find(c => c.id === activeCouncilId) || LIVE_COUNCIL;
-  const isLive = active.id === LIVE_COUNCIL.id;
+  // When the backend reports real councils, adopt them as the source of
+  // truth for the picker tabs (and the currently-selected council's data).
+  const realCouncils = useMemo(() => {
+    if (!liveCouncils?.councils?.length) return null;
+    return liveCouncils.councils.map(c => ({
+      id:        c.channel_id,
+      channel:   c.channel_id,
+      topic:     c.topic || c.channel_id,
+      phase:     c.phase,
+      agents:    (c.authors || []).map(a => a.replace(/^pr_/, "").split("_")[0]).filter(Boolean),
+      events:    c.event_count,
+      elapsed:   c.last_ts && c.first_ts ? Math.max(0, Math.round(c.last_ts - c.first_ts)) : 0,
+      rounds:    Math.max(1, Math.ceil((c.event_count || 1) / 4)),
+    }));
+  }, [liveCouncils]);
+  const councils = realCouncils || COUNCILS;
+  const active = councils.find(c => c.id === activeCouncilId) || councils[0] || LIVE_COUNCIL;
+  // The live-streaming tab renders the in-progress deliberation. When a real
+  // council is pinned we still mark it "live" so the event stream shows.
+  const isLive = active.id === LIVE_COUNCIL.id || active.id === activeCouncilId;
   const events = isLive ? liveEvents : [];
   const scrollRef = useRef(null);
 
@@ -38,8 +56,9 @@ function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset
       </div>
 
       {/* Council picker tabs */}
-      <div style={{display:"flex", gap:4, borderBottom:"1px solid var(--rule)", marginBottom:10, flexWrap:"wrap"}}>
-        {COUNCILS.map(c => (
+      <div style={{display:"flex", gap:4, borderBottom:"1px solid var(--rule)", marginBottom:10, flexWrap:"wrap", alignItems:"center"}}>
+        {realCouncils && <span className="chip sage" style={{marginRight:8}}>LIVE · {realCouncils.length}</span>}
+        {councils.map(c => (
           <div key={c.id}
             onClick={()=>onPickCouncil(c.id)}
             style={{
@@ -55,6 +74,9 @@ function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset
             <span style={{color:"var(--ink-4)", marginLeft:6, fontSize:10}}>{c.phase}</span>
           </div>
         ))}
+        {councils.length === 0 && (
+          <span style={{fontSize:11, color:"var(--ink-4)", padding:"5px 9px"}}>no councils yet · convene one below</span>
+        )}
       </div>
 
       {/* Event stream */}

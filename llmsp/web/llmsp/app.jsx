@@ -36,7 +36,11 @@ function App() {
 
   // Live backend data
   const { stats: liveStats, error: statsError } = useLiveStats(5000);
-  const liveAgents = useLiveAgents(15000);
+  const liveAgents   = useLiveAgents(15000);
+  const liveFinops   = useLiveFinops(15000);
+  const liveRag      = useLiveRag(30000);
+  const liveCouncils = useLiveCouncils(8000);
+  const liveThreats  = useLiveThreats(60000);
   const { events: wsEvents, connected: wsConnected } = useLedgerStream(200);
   const { firstRun } = useOnboardingState(liveStats, settings);
   const connection = statsError ? "offline" : (liveStats ? "connected" : "connecting");
@@ -177,12 +181,12 @@ function App() {
       <div className="grid-main">
         {tweaks.show_finops && (
           <div style={{gridColumn: tweaks.show_integrity ? "1 / span 1" : "1 / span 2"}}>
-            <FinOpsPanel />
+            <FinOpsPanel liveFinops={liveFinops} />
           </div>
         )}
         {tweaks.show_integrity && (
           <div style={{gridColumn: tweaks.show_finops ? "2 / span 1" : "1 / span 2"}}>
-            <IntegrityPanel stats={liveStats} />
+            <IntegrityPanel stats={liveStats} threats={liveThreats} />
           </div>
         )}
 
@@ -198,6 +202,7 @@ function App() {
               onAgentClick={(n)=>setAgentOpen(n)}
               onPickCouncil={setActiveCouncil}
               activeCouncilId={activeCouncil}
+              liveCouncils={liveCouncils}
             />
           </div>
         )}
@@ -209,7 +214,7 @@ function App() {
         )}
         {tweaks.show_rag && (
           <div style={{gridColumn: tweaks.show_agents ? "2 / span 1" : "1 / span 2"}}>
-            <RAGPanel />
+            <RAGPanel liveRag={liveRag} />
           </div>
         )}
 

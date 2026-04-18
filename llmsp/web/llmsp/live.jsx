@@ -111,4 +111,56 @@ function useOnboardingState(stats, settings) {
   return { empty, hasKeys, firstRun: empty };
 }
 
-Object.assign(window, { useLiveStats, useLiveAgents, useLedgerStream, useOnboardingState, normalizeEvent });
+// Generic JSON polling helper used by the panel-specific hooks below.
+function usePolledJson(url, pollMs) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!cancelled) setData(j);
+      } catch (e) {}
+    };
+    poll();
+    const id = setInterval(poll, pollMs);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [url, pollMs]);
+  return data;
+}
+
+function useLiveFinops(pollMs = 15000)   { return usePolledJson("/api/finops",    pollMs); }
+function useLiveRag(pollMs = 30000)      { return usePolledJson("/api/rag/stats", pollMs); }
+function useLiveCouncils(pollMs = 8000)  { return usePolledJson("/api/councils",  pollMs); }
+
+// /api/audit is a POST; we wrap it in a custom hook that triggers a scan
+// on mount and on a slow interval. Returns the alert list or null.
+function useLiveThreats(pollMs = 60000) {
+  const [alerts, setAlerts] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const r = await fetch("/api/audit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!cancelled) setAlerts(j.alerts || []);
+      } catch (e) {}
+    };
+    run();
+    const id = setInterval(run, pollMs);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [pollMs]);
+  return alerts;
+}
+
+Object.assign(window, {
+  useLiveStats, useLiveAgents, useLedgerStream, useOnboardingState, normalizeEvent,
+  useLiveFinops, useLiveRag, useLiveCouncils, useLiveThreats,
+});

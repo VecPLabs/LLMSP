@@ -66,6 +66,7 @@ from llmsp.clerk import Clerk, SynthesisResult
 from llmsp.council import CouncilPhase, CouncilSession
 from llmsp.async_council import AsyncCouncil
 from llmsp.event_store import EventStore
+from llmsp.finops import CostTracker, _MODEL_PRICING
 from llmsp.models import EventType, SignedEvent, TextBlock
 from llmsp.persistent_registry import PersistentRegistry
 from llmsp.principal import AgentPrincipal
@@ -175,6 +176,7 @@ class LLMSPServer:
         )
         self._rag = RAGEngine(event_store)
         self._auditor = SecurityAuditor(event_store, registry=registry)
+        self._cost = CostTracker()
         self._bus = EventBus()
         self._host = host
         self._port = port
@@ -195,6 +197,9 @@ class LLMSPServer:
             ("POST", "/api/agents"): self._handle_register_agent,
             ("GET", "/api/stats"): self._handle_stats,
             ("POST", "/api/audit"): self._handle_audit,
+            ("GET", "/api/finops"): self._handle_finops,
+            ("GET", "/api/rag/stats"): self._handle_rag_stats,
+            ("GET", "/api/councils"): self._handle_list_councils,
         }
 
         handler = routes.get((method, path))
@@ -347,6 +352,105 @@ class LLMSPServer:
                 for a in alerts
             ],
         }
+
+    async def _handle_finops(self, body: dict) -> tuple[int, dict]:
+        """GET /api/finops — Aggregate cost + token usage across the swarm."""
+        by_model = self._cost.cost_by_model()
+        tokens_by_agent = self._cost.tokens_by_agent()
+
+        # Build per-model rows. When no usage has been recorded the response
+        # still returns the catalog so the dashboard can render real pricing.
+        models = []
+        tok_input: dict[str, int] = {}
+        tok_output: dict[str, int] = {}
+        calls: dict[str, int] = {}
+        for u in getattr(self._cost, "_usages", []):
+            tok_input[u.model]  = tok_input.get(u.model, 0)  + u.input_tokens
+            tok_output[u.model] = tok_output.get(u.model, 0) + u.output_tokens
+            calls[u.model]      = calls.get(u.model, 0)      + 1
+        all_models = set(by_model) | set(_MODEL_PRICING)
+        for name in sorted(all_models):
+            price = _MODEL_PRICING.get(name, (0.003, 0.015))
+            models.append({
+                "name": name,
+                "input_per_1k":  price[0],
+                "output_per_1k": price[1],
+                "input_tokens":  tok_input.get(name, 0),
+                "output_tokens": tok_output.get(name, 0),
+                "calls":         calls.get(name, 0),
+                "cost":          round(by_model.get(name, 0.0), 6),
+            })
+
+        return 200, {
+            "total_cost":   round(self._cost.total_cost, 6),
+            "total_tokens": self._cost.total_tokens,
+            "call_count":   self._cost.usage_count(),
+            "models":       models,
+            "agents": [
+                {"agent_id": aid, "tokens": tokens_by_agent.get(aid, 0),
+                 "cost": round(self._cost.cost_by_agent().get(aid, 0.0), 6)}
+                for aid in sorted(tokens_by_agent)
+            ],
+        }
+
+    async def _handle_rag_stats(self, body: dict) -> tuple[int, dict]:
+        """GET /api/rag/stats — RAG index health snapshot."""
+        # index_size is populated after build_index(); trigger a cheap refresh
+        # so a cold-start server returns real counts instead of zero.
+        try:
+            self._rag.build_index()
+        except Exception:
+            pass
+        return 200, {
+            "docs":         len(self._store),
+            "indexed":      getattr(self._rag, "index_size", 0),
+            "tfidf_terms":  getattr(self._rag, "vocabulary_size", None),
+            # MRR/NDCG self-check is not available from rag.py yet; null means
+            # the panel will keep showing fixture values labelled "demo".
+            "mrr":    None,
+            "ndcg10": None,
+            "p3":     None,
+            "r10":    None,
+        }
+
+    async def _handle_list_councils(self, body: dict) -> tuple[int, dict]:
+        """GET /api/councils — Summarise recent channels as councils.
+
+        A "council" here is any channel that has at least one event; we
+        surface the distinct set so the dashboard's council-picker tabs
+        reflect real ledger activity.
+        """
+        limit = int(body.get("limit", 20)) if body else 20
+        channels = self._store.list_channels(limit=limit)
+        councils = []
+        for ch in channels:
+            first = self._store.get_channel(ch["channel_id"], limit=1)
+            latest = self._store.latest(ch["channel_id"])
+            topic = ""
+            if first and first[0].blocks:
+                block = first[0].blocks[0]
+                topic = getattr(block, "content", "") or getattr(block, "claim", "") or ""
+            phase = "complete"
+            if latest:
+                etype = latest.event_type.value
+                phase = {
+                    "council_start": "deliberating",
+                    "message": "deliberating",
+                    "claim": "deliberating",
+                    "objection": "reviewing",
+                    "decision": "synthesizing",
+                    "council_end": "complete",
+                }.get(etype, "deliberating")
+            councils.append({
+                "channel_id":  ch["channel_id"],
+                "event_count": ch["event_count"],
+                "first_ts":    ch["first_ts"],
+                "last_ts":     ch["last_ts"],
+                "authors":     ch["authors"],
+                "topic":       topic[:240],
+                "phase":       phase,
+            })
+        return 200, {"count": len(councils), "councils": councils}
 
     # ------------------------------------------------------------------
     # Serialization
