@@ -1,7 +1,10 @@
 // Top row: header bar, cost/finops, integrity, rag
 
-function HeaderBar({ theme, onTheme, density, onDensity, onOpenCouncil, live }) {
+function HeaderBar({ theme, onTheme, density, onDensity, onOpenCouncil, onShowShortcuts, live, connection, stats }) {
   const tick = useTick(1000);
+  const eventCount = stats?.total_events;
+  const agentCount = stats?.total_agents;
+  const connected = connection === "connected";
   return (
     <div className="header">
       <div style={{display:"flex", alignItems:"center", gap:14}}>
@@ -13,8 +16,17 @@ function HeaderBar({ theme, onTheme, density, onDensity, onOpenCouncil, live }) 
         </div>
         <div style={{borderLeft:"1px solid var(--rule)", height:34}}></div>
         <div style={{display:"flex", gap:18, fontSize:11}}>
-          <div><span className="lbl">node</span> <span style={{color:"var(--ink-2)"}}>prod-us-east-1</span></div>
-          <div><span className="lbl">ledger</span> <span style={{color:"var(--ink-2)"}}>swarm.db · 2.4GB</span></div>
+          <div><span className="lbl">node</span> <span style={{color:"var(--ink-2)"}}>{location.host || "localhost"}</span></div>
+          <div>
+            <span className="lbl">ledger</span>{" "}
+            <span style={{color:"var(--ink-2)"}}>
+              {eventCount != null ? `${fmt.num(eventCount)} events` : "swarm.db"}
+            </span>
+          </div>
+          <div>
+            <span className="lbl">agents</span>{" "}
+            <span style={{color:"var(--ink-2)"}}>{agentCount != null ? agentCount : "—"}</span>
+          </div>
           <div><span className="lbl">uptime</span> <span style={{color:"var(--ink-2)"}}>14d 02:{String(tick%60).padStart(2,"0")}</span></div>
         </div>
       </div>
@@ -24,11 +36,14 @@ function HeaderBar({ theme, onTheme, density, onDensity, onOpenCouncil, live }) 
           “a mirror, not a lamp”
         </div>
         <div className="lbl" style={{lineHeight:1, display:"flex", alignItems:"center", gap:6}}>
-          {live ? <><span className="dot pulse green"></span><span>LIVE · {fmt.clock()}</span></> : <span>PAUSED</span>}
+          {live && connected && <><span className="dot pulse green"></span><span>LIVE · {fmt.clock()}</span></>}
+          {live && !connected && <><span className="dot amber pulse"></span><span>RECONNECTING · {fmt.clock()}</span></>}
+          {!live && <span>PAUSED</span>}
         </div>
       </div>
 
       <div style={{display:"flex", alignItems:"center", gap:8}}>
+        <button onClick={onShowShortcuts} title="Keyboard shortcuts (?)">? shortcuts</button>
         <button onClick={onOpenCouncil} className="primary">＋ New Council</button>
         <button onClick={onDensity}>{density==="compact"?"◐ Comfy":"◑ Compact"}</button>
         <button onClick={onTheme}>{theme==="dark"?"☼ Light":"☾ Dark"}</button>
@@ -111,18 +126,26 @@ function FinOpsPanel() {
 }
 
 // ───────────────────────────────────────────── Integrity
-function IntegrityPanel() {
+function IntegrityPanel({ stats }) {
   const { INTEGRITY } = window.LLMSP_DATA;
+  const integrityOK = !stats || stats.integrity === "ok";
+  const liveEvents = stats?.total_events;
+  const mismatches = stats && stats.integrity !== "ok"
+    ? (stats.integrity.match(/\d+/)?.[0] || "?")
+    : 0;
+  const rightChip = integrityOK
+    ? <span className="chip sage"><span className="dot green pulse"></span> VERIFIED</span>
+    : <span className="chip rust"><span className="dot rust pulse"></span> MISMATCH</span>;
   return (
-    <Panel title="Scarred Ledger · Integrity" right={<><span className="chip sage"><span className="dot green pulse"></span> VERIFIED</span></>}>
+    <Panel title="Scarred Ledger · Integrity" right={<>{rightChip}{stats ? <span className="chip ghost">LIVE</span> : null}</>}>
       <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12}}>
         <div>
           <div className="lbl">Events on ledger</div>
-          <div className="num-lg">{fmt.num(INTEGRITY.events_total)}</div>
+          <div className="num-lg">{fmt.num(liveEvents != null ? liveEvents : INTEGRITY.events_total)}</div>
         </div>
         <div>
           <div className="lbl">Hash mismatches</div>
-          <div className="num-lg" style={{color:"var(--good)"}}>0</div>
+          <div className="num-lg" style={{color: mismatches === 0 ? "var(--good)" : "var(--accent-3)"}}>{mismatches}</div>
         </div>
         <div>
           <div className="lbl">Sig failures · 24h</div>

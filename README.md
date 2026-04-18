@@ -571,7 +571,12 @@ llmsp serve --host 0.0.0.0 --port 8420
 The server also hosts the browser dashboard at `http://<host>:<port>/` —
 a live, terminal-inspired Swarm Operations UI with FinOps tracking,
 live council deliberation, ledger integrity, RAG health, and a persistent
-Convene bar for launching councils directly from the browser.
+Convene bar for launching councils directly from the browser. The dashboard
+polls `/api/stats` and `/api/agents` for real state and subscribes to
+`/ws/events` to tail the event ledger in real time. First-run shows an
+onboarding banner; press `?` for keyboard shortcuts, `/` to focus the
+Convene bar, and `,` to open Settings. Synthesis output can be copied as
+Markdown with one click.
 
 ### REST Endpoints
 

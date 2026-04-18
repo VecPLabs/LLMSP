@@ -108,16 +108,19 @@ function SettingsModal({ open, onClose, settings, setSettings }) {
 }
 
 // ───────────────────────────────────────────── Convene bar (persistent bottom)
-function ConveneBar({ onOpenSettings, settings, onLaunch, busy, status }) {
+function ConveneBar({ onOpenSettings, settings, onLaunch, onAbort, busy, status, queueLen }) {
   const [q, setQ] = useState("");
   const [backends, setBackends] = useState(["claude","gemini","grok"]);
   const keyCount = ["anthropic_key","google_key","xai_key"].filter(k=>settings[k]).length;
   const toggle = (b) => setBackends(bs => bs.includes(b) ? bs.filter(x=>x!==b) : [...bs,b]);
   const submit = () => {
-    if (!q.trim() || busy) return;
+    if (!q.trim()) return;
     onLaunch(q, backends);
     setQ("");
   };
+  const primaryLabel = busy
+    ? (q.trim() ? `Queue ↵ ${queueLen ? `(${queueLen+1})` : ""}` : "deliberating…")
+    : "Convene ↵";
   return (
     <div style={{
       position:"fixed", left:0, right:0, bottom:0,
@@ -125,17 +128,17 @@ function ConveneBar({ onOpenSettings, settings, onLaunch, busy, status }) {
       padding:"10px 16px", zIndex:90,
       boxShadow:"0 -4px 16px rgba(0,0,0,0.08)",
     }}>
-      <div style={{maxWidth:1680, margin:"0 auto", display:"grid", gridTemplateColumns:"auto 1fr auto auto auto", gap:10, alignItems:"center"}}>
+      <div style={{maxWidth:1680, margin:"0 auto", display:"grid", gridTemplateColumns:"auto 1fr auto auto auto auto", gap:10, alignItems:"center"}}>
         <div style={{display:"flex", alignItems:"center", gap:8, fontFamily:"var(--serif)", fontStyle:"italic", fontSize:18, color:"var(--ink)"}}>
           <span style={{color:"var(--accent)"}}>»</span>
           <span>convene</span>
         </div>
         <input
+          data-convene-input
           value={q}
           onChange={e=>setQ(e.target.value)}
           onKeyDown={e=>{ if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
-          disabled={busy}
-          placeholder={busy ? status : "Ask the swarm…   e.g. Ed25519 or RSA-PSS for agent signing?"}
+          placeholder={busy && !q ? `${status}${queueLen ? ` · ${queueLen} queued` : ""}` : "Ask the swarm…   e.g. Ed25519 or RSA-PSS for agent signing?"}
           style={{width:"100%", fontSize:13, padding:"8px 12px", background:"var(--bg)"}}
         />
         <div style={{display:"flex", gap:4}}>
@@ -151,12 +154,15 @@ function ConveneBar({ onOpenSettings, settings, onLaunch, busy, status }) {
             </button>
           ))}
         </div>
-        <button onClick={onOpenSettings} title="API keys & budget" style={{position:"relative"}}>
+        <button onClick={onOpenSettings} title="API keys & budget (,)" style={{position:"relative"}}>
           ⚙ keys
           {keyCount > 0 && <span style={{marginLeft:5, color:"var(--accent-2)"}}>({keyCount})</span>}
         </button>
-        <button className="primary" onClick={submit} disabled={busy || !q.trim()}>
-          {busy ? "deliberating…" : "Convene ↵"}
+        {busy
+          ? <button onClick={onAbort} title="Abort deliberation" style={{color:"var(--accent-3)", borderColor:"var(--accent-3)"}}>✕ Abort</button>
+          : <span style={{width:0}} />}
+        <button className="primary" onClick={submit} disabled={!q.trim() && !busy}>
+          {primaryLabel}
         </button>
       </div>
       <div style={{maxWidth:1680, margin:"6px auto 0", fontSize:10, color:"var(--ink-4)", display:"flex", justifyContent:"space-between"}}>
@@ -165,17 +171,22 @@ function ConveneBar({ onOpenSettings, settings, onLaunch, busy, status }) {
             ? "using built-in haiku · no key required"
             : `direct · ${settings.prefer_backend}`}
           {" · "}budget ${settings.budget_cap?.toFixed(2) || "0.00"}/mo
+          {busy && <span style={{color:"var(--accent)", marginLeft:8}}>● {status}</span>}
         </span>
-        <span>⏎ to convene · shift+⏎ newline</span>
+        <span>
+          <span className="kbd">/</span> focus · <span className="kbd">⏎</span> submit · <span className="kbd">?</span> shortcuts
+        </span>
       </div>
     </div>
   );
 }
 
 // ───────────────────────────────────────────── Orchestrator: real deliberation
-// Uses window.claude.complete when available (design-tool harness),
-// otherwise falls back to a local synthetic stream so the UI still demonstrates.
-async function runDeliberation(query, backends, onEvent) {
+// Picks a completion strategy based on settings + environment:
+//   1. settings.prefer_backend === "anthropic"/"google"/"xai" with a key → direct provider call
+//   2. window.claude.complete (design-tool harness) → use it
+//   3. falls back to a local synthetic generator so the UI still demonstrates.
+async function runDeliberation(query, backends, onEvent, settings) {
   const agents = [
     { who: "Alice", role: "security",     color: "amber",
       system: "You are Alice, a security-focused AI agent in a multi-agent council. Be concise (1-2 sentences). Focus on threats, crypto, authentication, and data protection. Respond from a security-first lens." },
@@ -185,10 +196,7 @@ async function runDeliberation(query, backends, onEvent) {
       system: "You are Carol, a performance-focused AI agent in a multi-agent council. Be concise (1-2 sentences). Focus on benchmarks, latency, throughput, and efficiency. Include concrete numbers when possible." },
   ].filter((a,i) => i < Math.max(2, backends.length));
 
-  const hasHarness = typeof window.claude !== "undefined" && typeof window.claude.complete === "function";
-  const complete = hasHarness
-    ? (messages) => window.claude.complete({ messages })
-    : syntheticComplete;
+  const complete = buildCompleter(settings);
 
   let t = 0;
   onEvent({ t: t++, who:"Clerk", role:"clerk", type:"COUNCIL_START",
@@ -196,6 +204,7 @@ async function runDeliberation(query, backends, onEvent) {
 
   // Round 1 — opening positions, sequential for nice streaming feel
   const priorStatements = [];
+  let anyFailure = null;
   for (const a of agents) {
     try {
       const prompt = `The council is deliberating: "${query}"\n\nPrior statements:\n${priorStatements.length ? priorStatements.map(p=>`- ${p.who}: ${p.text}`).join("\n") : "(none yet)"}\n\nAs ${a.who} (${a.role}), give your opening position. Respond with JSON only: {"text": "...", "type": "CLAIM" or "MESSAGE", "confidence": 0-1}. One or two sentences max.`;
@@ -208,9 +217,14 @@ async function runDeliberation(query, backends, onEvent) {
       onEvent({ t: t += 3, who: a.who, role: a.role, type, text, conf });
       await sleep(300);
     } catch (err) {
+      anyFailure = err;
       onEvent({ t: t += 3, who: a.who, role: a.role, type:"MESSAGE",
-        text: `(offline) unable to reach backend: ${String(err).slice(0,80)}`, conf: 0.5 });
+        text: `(offline) ${err.message || String(err)}`, conf: 0.5 });
     }
+  }
+  // If every agent failed on round 1, raise so the UI surfaces a real error.
+  if (priorStatements.length === 0 && anyFailure) {
+    throw anyFailure;
   }
 
   // Round 2 — objection / refinement round
@@ -252,6 +266,80 @@ async function runDeliberation(query, backends, onEvent) {
   }
 
   onEvent({ t: t += 1, who:"Clerk", role:"clerk", type:"COUNCIL_END", text:"Council closed. Events committed to ledger." });
+}
+
+// Selects a completion strategy based on user settings. Returns an async
+// (messages) => string function. Any HTTP error is thrown with a concise,
+// user-readable message (status code + provider response snippet) so the
+// dashboard can show a proper error banner instead of a vague "offline".
+function buildCompleter(settings) {
+  const pref = settings?.prefer_backend || "builtin";
+  if (pref === "anthropic" && settings.anthropic_key) return anthropicComplete(settings.anthropic_key);
+  if (pref === "google"    && settings.google_key)    return googleComplete(settings.google_key);
+  if (pref === "xai"       && settings.xai_key)       return xaiComplete(settings.xai_key);
+  const hasHarness = typeof window.claude !== "undefined" && typeof window.claude.complete === "function";
+  if (hasHarness) return (messages) => window.claude.complete({ messages });
+  return syntheticComplete;
+}
+
+function anthropicComplete(key) {
+  return async (messages) => {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5",
+        max_tokens: 400,
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
+      }),
+    });
+    if (!r.ok) throw new Error(await providerError(r, "anthropic"));
+    const j = await r.json();
+    return j.content?.[0]?.text || "";
+  };
+}
+
+function googleComplete(key) {
+  return async (messages) => {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+      }),
+    });
+    if (!r.ok) throw new Error(await providerError(r, "google"));
+    const j = await r.json();
+    return j.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  };
+}
+
+function xaiComplete(key) {
+  return async (messages) => {
+    const r = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "authorization": `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "grok-3-mini",
+        messages,
+      }),
+    });
+    if (!r.ok) throw new Error(await providerError(r, "xai"));
+    const j = await r.json();
+    return j.choices?.[0]?.message?.content || "";
+  };
+}
+
+async function providerError(r, provider) {
+  let body = "";
+  try { body = (await r.text()).slice(0, 200); } catch (e) {}
+  return `${provider} ${r.status} ${r.statusText}${body ? ` · ${body}` : ""}`;
 }
 
 // Local synthetic generator used when window.claude.complete is not present.
