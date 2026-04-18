@@ -135,6 +135,52 @@ function useLiveFinops(pollMs = 15000)   { return usePolledJson("/api/finops",  
 function useLiveRag(pollMs = 30000)      { return usePolledJson("/api/rag/stats", pollMs); }
 function useLiveCouncils(pollMs = 8000)  { return usePolledJson("/api/councils",  pollMs); }
 
+// Fetch a channel's full event log. When channelId is null, returns null.
+// The response is normalized to the shape CouncilEvent renders: each row
+// has { t (relative seconds), who, role, type, text, conf?, reply? }.
+function useChannelEvents(channelId) {
+  const [state, setState] = useState({ channelId: null, events: [], loading: false });
+  useEffect(() => {
+    if (!channelId) { setState({ channelId: null, events: [], loading: false }); return; }
+    let cancelled = false;
+    setState(s => ({ ...s, channelId, loading: true }));
+    (async () => {
+      try {
+        const r = await fetch(`/api/events/${encodeURIComponent(channelId)}`, { cache: "no-store" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (cancelled) return;
+        const rows = (j.events || []).map((ev, i, arr) => normalizeCouncilEvent(ev, arr[0]?.timestamp || 0));
+        setState({ channelId, events: rows, loading: false });
+      } catch (e) {
+        if (!cancelled) setState({ channelId, events: [], loading: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [channelId]);
+  return state;
+}
+
+// Convert a SignedEvent JSON blob into the CouncilEvent row shape.
+function normalizeCouncilEvent(ev, anchorTs) {
+  const rel = Math.max(0, Math.round((ev.timestamp || 0) - anchorTs));
+  const who = (ev.author_id || "").replace(/^pr_/, "").split("_")[0] || "?";
+  const rolePart = (ev.author_id || "").replace(/^pr_/, "").split("_").slice(1).join("_");
+  const role = (rolePart || "clerk").toLowerCase();
+  const first = Array.isArray(ev.blocks) && ev.blocks[0] ? ev.blocks[0] : {};
+  const text = first.content || first.claim || first.decision || first.task || first.rationale || "";
+  const conf = typeof first.confidence === "number" ? first.confidence : undefined;
+  const type = (ev.event_type || "MESSAGE").toUpperCase();
+  return {
+    t: rel,
+    who: who.charAt(0).toUpperCase() + who.slice(1),
+    role,
+    type,
+    text,
+    ...(conf != null ? { conf } : {}),
+  };
+}
+
 // /api/audit is a POST; we wrap it in a custom hook that triggers a scan
 // on mount and on a slow interval. Returns the alert list or null.
 function useLiveThreats(pollMs = 60000) {
@@ -163,4 +209,5 @@ function useLiveThreats(pollMs = 60000) {
 Object.assign(window, {
   useLiveStats, useLiveAgents, useLedgerStream, useOnboardingState, normalizeEvent,
   useLiveFinops, useLiveRag, useLiveCouncils, useLiveThreats,
+  useChannelEvents, normalizeCouncilEvent,
 });

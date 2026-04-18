@@ -168,15 +168,18 @@ class LLMSPServer:
         self._clerk_principal = AgentPrincipal("Clerk", "clerk")
         self._registry.register(self._clerk_principal)
         self._clerk = Clerk(self._clerk_principal)
+        # AsyncCouncil writes per-adapter-call usage into this tracker via
+        # its _record_usage hook, so /api/finops reflects real spend.
+        self._cost = CostTracker()
         self._council = AsyncCouncil(
             event_store=event_store,
             registry=registry,
             router=self._router,
             clerk=self._clerk,
+            cost_tracker=self._cost,
         )
         self._rag = RAGEngine(event_store)
         self._auditor = SecurityAuditor(event_store, registry=registry)
-        self._cost = CostTracker()
         self._bus = EventBus()
         self._host = host
         self._port = port
@@ -394,23 +397,32 @@ class LLMSPServer:
         }
 
     async def _handle_rag_stats(self, body: dict) -> tuple[int, dict]:
-        """GET /api/rag/stats — RAG index health snapshot."""
+        """GET /api/rag/stats — RAG index health snapshot with a self-check."""
         # index_size is populated after build_index(); trigger a cheap refresh
         # so a cold-start server returns real counts instead of zero.
         try:
             self._rag.build_index()
         except Exception:
             pass
+
+        embedder = getattr(self._rag, "_embedder", None)
+        vocab_size = getattr(embedder, "dimensions", None)
+
+        metrics: dict[str, Any] = {"mrr": None, "ndcg10": None, "p3": None, "r10": None, "queries": 0}
+        try:
+            metrics = self._rag.self_check()
+        except Exception:
+            pass
+
         return 200, {
             "docs":         len(self._store),
             "indexed":      getattr(self._rag, "index_size", 0),
-            "tfidf_terms":  getattr(self._rag, "vocabulary_size", None),
-            # MRR/NDCG self-check is not available from rag.py yet; null means
-            # the panel will keep showing fixture values labelled "demo".
-            "mrr":    None,
-            "ndcg10": None,
-            "p3":     None,
-            "r10":    None,
+            "tfidf_terms":  vocab_size,
+            "mrr":          metrics.get("mrr"),
+            "ndcg10":       metrics.get("ndcg10"),
+            "p3":           metrics.get("p3"),
+            "r10":          metrics.get("r10"),
+            "self_check_queries": metrics.get("queries", 0),
         }
 
     async def _handle_list_councils(self, body: dict) -> tuple[int, dict]:

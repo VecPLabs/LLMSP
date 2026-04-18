@@ -19,10 +19,17 @@ function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset
   }, [liveCouncils]);
   const councils = realCouncils || COUNCILS;
   const active = councils.find(c => c.id === activeCouncilId) || councils[0] || LIVE_COUNCIL;
-  // The live-streaming tab renders the in-progress deliberation. When a real
-  // council is pinned we still mark it "live" so the event stream shows.
-  const isLive = active.id === LIVE_COUNCIL.id || active.id === activeCouncilId;
-  const events = isLive ? liveEvents : [];
+  // Streaming mode shows when: (a) user convened a real deliberation, or
+  // (b) the fixture LIVE_COUNCIL is selected. Otherwise we hydrate the
+  // selected channel's events from /api/events/{channel}.
+  const isStreaming = usingReal && active.id === LIVE_COUNCIL.id;
+  const isLive = isStreaming || active.id === LIVE_COUNCIL.id;
+  const hydrateChannelId = !isStreaming && realCouncils ? active.channel : null;
+  const { events: historicalEvents, loading: historicalLoading } = useChannelEvents(hydrateChannelId);
+  const events = isStreaming
+    ? liveEvents
+    : (historicalEvents.length ? historicalEvents
+       : (active.id === LIVE_COUNCIL.id ? liveEvents : []));
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -80,7 +87,7 @@ function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset
       </div>
 
       {/* Event stream */}
-      {isLive ? (
+      {isStreaming && (
         <div ref={scrollRef} style={{maxHeight:340, overflowY:"auto", paddingRight:4}}>
           {events.map((e, i) => <CouncilEvent key={i} e={e} onAgentClick={onAgentClick} />)}
           <div style={{display:"flex", alignItems:"center", gap:8, padding:"6px 0", color:"var(--ink-4)", fontSize:11}}>
@@ -88,10 +95,25 @@ function CouncilPanel({ liveEvents, liveTopic, liveSynthesis, usingReal, onReset
             <span className="caret">awaiting next response</span>
           </div>
         </div>
-      ) : (
+      )}
+      {!isStreaming && events.length > 0 && (
+        <div style={{maxHeight:340, overflowY:"auto", paddingRight:4}}>
+          {events.map((e, i) => <CouncilEvent key={i} e={e} onAgentClick={onAgentClick} />)}
+          <div style={{fontSize:10, color:"var(--ink-4)", padding:"6px 0", textAlign:"center", borderTop:"1px dashed var(--rule)"}}>
+            {events.length} events · from ledger · `llmsp log {active.channel}`
+          </div>
+        </div>
+      )}
+      {!isStreaming && events.length === 0 && (
         <div style={{padding:"20px 0", textAlign:"center", color:"var(--ink-3)", fontSize:12, borderTop:"1px dashed var(--rule)"}}>
-          <div className="serif" style={{fontSize:15, color:"var(--ink-2)"}}>Completed · see synthesis below</div>
-          <div style={{marginTop:4, fontSize:11, color:"var(--ink-4)"}}>full event log available via `llmsp log {active.channel}`</div>
+          {historicalLoading ? (
+            <div style={{fontSize:11, color:"var(--ink-4)"}}>loading events for {active.channel}…</div>
+          ) : (
+            <>
+              <div className="serif" style={{fontSize:15, color:"var(--ink-2)"}}>Completed · see synthesis below</div>
+              <div style={{marginTop:4, fontSize:11, color:"var(--ink-4)"}}>full event log available via `llmsp log {active.channel}`</div>
+            </>
+          )}
         </div>
       )}
 
