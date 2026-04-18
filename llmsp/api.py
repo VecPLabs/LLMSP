@@ -29,7 +29,38 @@ import time
 import weakref
 from dataclasses import asdict, dataclass
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, Optional
+
+WEB_ROOT = Path(__file__).parent / "web"
+
+_STATIC_MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".jsx":  "text/babel; charset=utf-8",
+    ".js":   "application/javascript; charset=utf-8",
+    ".css":  "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg":  "image/svg+xml",
+    ".png":  "image/png",
+    ".ico":  "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def _resolve_static(path: str) -> Optional[Path]:
+    """Map a URL path to a safe file under WEB_ROOT, or None if not served."""
+    rel = path.lstrip("/") or "index.html"
+    candidate = (WEB_ROOT / rel).resolve()
+    try:
+        candidate.relative_to(WEB_ROOT.resolve())
+    except ValueError:
+        return None
+    if candidate.is_dir():
+        candidate = candidate / "index.html"
+    if not candidate.is_file():
+        return None
+    return candidate
 
 from llmsp.clerk import Clerk, SynthesisResult
 from llmsp.council import CouncilPhase, CouncilSession
@@ -410,6 +441,11 @@ class LLMSPServer:
                         k, v = param.split("=", 1)
                         body.setdefault(k, v)
 
+            # Static file serving for the dashboard — everything outside /api and /ws.
+            if method == "GET" and not path.startswith("/api/") and not path.startswith("/ws/"):
+                if await self._serve_static(path, writer):
+                    return
+
             status_code, response = await self.handle_request(method, path, body)
             response_body = json.dumps(response, indent=2)
 
@@ -437,6 +473,29 @@ class LLMSPServer:
                 pass
         finally:
             writer.close()
+
+    async def _serve_static(self, path: str, writer: asyncio.StreamWriter) -> bool:
+        """Serve a static file from the dashboard bundle. Returns True if handled."""
+        target = _resolve_static(path)
+        if target is None:
+            return False
+        try:
+            data = target.read_bytes()
+        except OSError:
+            return False
+
+        mime = _STATIC_MIME_TYPES.get(target.suffix.lower(), "application/octet-stream")
+        header = (
+            f"HTTP/1.1 200 OK\r\n"
+            f"Content-Type: {mime}\r\n"
+            f"Content-Length: {len(data)}\r\n"
+            f"Cache-Control: no-cache\r\n"
+            f"Access-Control-Allow-Origin: *\r\n"
+            f"\r\n"
+        ).encode()
+        writer.write(header + data)
+        await writer.drain()
+        return True
 
     async def _handle_ws_upgrade(
         self,
@@ -489,6 +548,7 @@ class LLMSPServer:
             self._port,
         )
         print(f"LLMSP API server running on {self._host}:{self._port}")
+        print(f"  Dashboard: http://{self._host}:{self._port}/")
         print(f"  REST:      http://{self._host}:{self._port}/api/")
         print(f"  WebSocket: ws://{self._host}:{self._port}/ws/events")
         async with server:

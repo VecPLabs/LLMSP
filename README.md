@@ -568,6 +568,11 @@ llmsp serve --host 0.0.0.0 --port 8420
 # or: python -m llmsp.api --host 0.0.0.0 --port 8420
 ```
 
+The server also hosts the browser dashboard at `http://<host>:<port>/` —
+a live, terminal-inspired Swarm Operations UI with FinOps tracking,
+live council deliberation, ledger integrity, RAG health, and a persistent
+Convene bar for launching councils directly from the browser.
+
 ### REST Endpoints
 
 | Method | Path | Description |

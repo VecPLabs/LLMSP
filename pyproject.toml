@@ -32,6 +32,9 @@ llmsp = "llmsp.cli:main"
 [tool.setuptools.packages.find]
 include = ["llmsp*"]
 
+[tool.setuptools.package-data]
+llmsp = ["web/*.html", "web/**/*.jsx", "web/**/*.js", "web/**/*.css"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
