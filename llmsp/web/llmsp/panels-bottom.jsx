@@ -1,16 +1,36 @@
 // Bottom row: agents registry, ledger stream, new council composer, agent drawer, synth modal
 
-function AgentsPanel({ onAgentClick, filter, onFilter }) {
+function AgentsPanel({ onAgentClick, filter, onFilter, liveAgents }) {
   const { AGENTS } = window.LLMSP_DATA;
-  const filtered = filter ? AGENTS.filter(a => a.role===filter || a.name===filter) : AGENTS;
+  // If the backend reports real agents, merge them over fixtures (match by name)
+  // so the table keeps its rich columns but reflects who's actually registered.
+  const source = useMemo(() => {
+    if (!liveAgents || liveAgents.length === 0) return AGENTS;
+    const colors = ["amber","sage","rust"];
+    return liveAgents.map((a, i) => {
+      const fx = AGENTS.find(x => x.name.toLowerCase() === (a.name || "").toLowerCase());
+      return fx ? { ...fx, id: a.agent_id, role: a.role }
+                : { id: a.agent_id, name: a.name, role: a.role,
+                    model: "—", tier: "standard",
+                    events: 0, objections: 0, agreement: 1,
+                    status: "active", color: colors[i % colors.length] };
+    });
+  }, [liveAgents]);
+  const filtered = filter ? source.filter(a => a.role===filter || a.name===filter) : source;
+  const liveTag = liveAgents ? <span className="chip sage">LIVE · {liveAgents.length}</span> : null;
   return (
-    <Panel title="Agent Registry" right={<span className="chip ghost">{AGENTS.length} principals · ed25519</span>}>
+    <Panel title="Agent Registry" right={<>{liveTag}<span className="chip ghost">{source.length} principals · ed25519</span></>}>
       <table className="tbl">
         <thead>
           <tr><th>Agent</th><th>Role</th><th>Model</th><th style={{textAlign:"right"}}>Events</th>
               <th style={{textAlign:"right"}}>Obj.</th><th style={{textAlign:"right"}}>Agree</th><th></th></tr>
         </thead>
         <tbody>
+          {filtered.length === 0 && (
+            <tr><td colSpan={7} style={{color:"var(--ink-4)", textAlign:"center", padding:"14px"}}>
+              no agents registered · <span style={{color:"var(--ink-3)"}}>POST /api/agents or run <span className="kbd">llmsp register</span></span>
+            </td></tr>
+          )}
           {filtered.map(a => (
             <tr key={a.id} onClick={()=>onAgentClick(a.name)}>
               <td style={{display:"flex", alignItems:"center", gap:8}}>
@@ -39,10 +59,13 @@ function AgentsPanel({ onAgentClick, filter, onFilter }) {
 }
 
 // Ledger stream
-function LedgerPanel({ filterCh, filterAgent, filterType, onSetCh, onSetAgent, onSetType, tick }) {
+function LedgerPanel({ filterCh, filterAgent, filterType, onSetCh, onSetAgent, onSetType, tick, liveEvents, connected }) {
   const { LEDGER_SAMPLE, AGENTS, COUNCILS } = window.LLMSP_DATA;
-  // Inject new rows over time to simulate live
+  const hasLive = Array.isArray(liveEvents) && liveEvents.length > 0;
+
+  // Fixture-backed synthetic stream for the demo when no real events exist.
   const extra = useMemo(() => {
+    if (hasLive) return [];
     const out = [];
     const agents = AGENTS.map(a => a.name);
     const channels = COUNCILS.map(c => c.channel);
@@ -67,24 +90,30 @@ function LedgerPanel({ filterCh, filterAgent, filterType, onSetCh, onSetAgent, o
       });
     }
     return out.reverse();
-  }, [tick]);
+  }, [tick, hasLive]);
 
-  const all = [...extra, ...LEDGER_SAMPLE];
+  const all = hasLive ? liveEvents : [...extra, ...LEDGER_SAMPLE];
   const filtered = all.filter(r =>
     (!filterCh || r.ch===filterCh) &&
     (!filterAgent || r.who===filterAgent) &&
     (!filterType || r.type===filterType)
   );
 
-  const channels = [...new Set(LEDGER_SAMPLE.map(r=>r.ch))];
-  const agents = [...new Set(LEDGER_SAMPLE.map(r=>r.who))];
+  const channels = [...new Set(all.map(r=>r.ch).filter(Boolean))];
+  const agents = [...new Set(all.map(r=>r.who).filter(Boolean))];
   const types = ["MESSAGE","CLAIM","OBJECTION","DECISION","PHASE"];
+
+  const statusChip = hasLive
+    ? <span className="chip sage"><span className="dot green pulse"></span>TAILING · WS</span>
+    : connected === false
+      ? <span className="chip ghost"><span className="dot ghost"></span>OFFLINE · fixtures</span>
+      : <span className="chip"><span className="dot green pulse"></span>TAILING</span>;
 
   return (
     <Panel
       title="Ledger · Signed Event Stream"
       right={<>
-        <span className="chip"><span className="dot green pulse"></span>TAILING</span>
+        {statusChip}
         <span className="chip ghost">append-only · sha-256</span>
       </>}
     >
@@ -239,16 +268,37 @@ function AgentDrawer({ name, onClose }) {
 
 // Synthesis modal
 function SynthesisModal({ open, onClose, overrideSynthesis, overrideTopic }) {
+  const [copied, setCopied] = useState(false);
   if (!open) return null;
   const { LIVE_COUNCIL } = window.LLMSP_DATA;
   const s = overrideSynthesis || LIVE_COUNCIL.synthesis;
   const topic = overrideTopic || LIVE_COUNCIL.topic;
+  const copyMarkdown = async () => {
+    const md = synthesisToMarkdown(topic, s);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopied(true);
+      setTimeout(()=>setCopied(false), 1800);
+    } catch (e) {
+      // Fallback: select-all textarea trick
+      const ta = document.createElement("textarea");
+      ta.value = md; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); setCopied(true); setTimeout(()=>setCopied(false), 1800); } catch(_) {}
+      document.body.removeChild(ta);
+    }
+  };
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760}}>
         <div className="panel-title">
           <div className="t-left"><span className="ascii-corner">┌─</span><span>Clerk · Synthesis · {LIVE_COUNCIL.id}</span></div>
-          <div className="t-right"><span className="chip sage">ZERO-HALLUCINATION</span><span className="kbd">esc</span></div>
+          <div className="t-right">
+            <button onClick={copyMarkdown} style={{padding:"3px 8px"}}>
+              {copied ? "✓ copied" : "⧉ copy md"}
+            </button>
+            <span className="chip sage">ZERO-HALLUCINATION</span>
+            <span className="kbd">esc</span>
+          </div>
         </div>
         <div style={{padding:"20px 22px"}}>
           <div style={{borderLeft:"2px solid var(--accent)", paddingLeft:12, marginBottom:16}}>
@@ -314,4 +364,37 @@ function Section({ title, children, accent }) {
   );
 }
 
-Object.assign(window, { AgentsPanel, LedgerPanel, ComposerModal, AgentDrawer, SynthesisModal });
+function synthesisToMarkdown(topic, s) {
+  const lines = [];
+  lines.push(`# LLMSP Council Synthesis`, "");
+  lines.push(`**Topic:** ${topic}`, "");
+  if (s.agreements?.length) {
+    lines.push(`## Agreements (${s.agreements.length})`);
+    s.agreements.forEach(g => lines.push(`- ${g}`));
+    lines.push("");
+  }
+  if (s.disagreements?.length) {
+    lines.push(`## Disagreements (${s.disagreements.length})`);
+    s.disagreements.forEach(d => {
+      lines.push(`- **${d.topic}**`);
+      (d.positions || []).forEach(p => lines.push(`  - *${p.agent}:* ${p.view}`));
+    });
+    lines.push("");
+  }
+  if (s.decisions?.length) {
+    lines.push(`## Decisions (${s.decisions.length})`);
+    s.decisions.forEach(d => {
+      lines.push(`- **${d.decision}**`);
+      if (d.rationale) lines.push(`  - _rationale:_ ${d.rationale}`);
+    });
+    lines.push("");
+  }
+  if (s.tasks?.length) {
+    lines.push(`## Action Items (${s.tasks.length})`);
+    s.tasks.forEach(t => lines.push(`- [ ] ${t.task} — _${t.assignee} · ${t.status}_`));
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+Object.assign(window, { AgentsPanel, LedgerPanel, ComposerModal, AgentDrawer, SynthesisModal, synthesisToMarkdown });
