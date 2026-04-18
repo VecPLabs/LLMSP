@@ -17,6 +17,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from llmsp.event_store import EventStore
@@ -560,5 +561,4 @@ if __name__ == "__main__":
     parser.add_argument("--interval", type=float, default=30.0, help="Scan interval (seconds)")
     args = parser.parse_args()
 
-    from pathlib import Path
     _run_daemon(args.db_dir, args.interval)
